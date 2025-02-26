@@ -1,17 +1,10 @@
 use anchor_lang::prelude::*;
 
-declare_id!("5vhFMApEVBDFWUhnGtQBepGLT1PCp1Bi9rKxiAYhomci");
+declare_id!("CxPnNodmbwnJ1LMgGoU3JmAko6g8ByHRQuULe8MDGmGg");
 
 #[program]
 pub mod solana_toy {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-        msg!("hello world2 {}", &id());
-
-        Ok(())
-    }
+   
 }
-
-#[derive(Accounts)]
-pub struct Initialize {}
