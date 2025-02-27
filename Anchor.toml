@@ -5,7 +5,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-solana_toy = "2FYV28WPRyd6qD6k62BsB2kf6AJ8UBUpnNTR5J2h37da"
+solana_toy = "85nfCQoVyGT2KWeDfdkeVyiS9s3mRPyzSEEL93RpN1yV"
 
 [registry]
 url = "https://api.apr.dev"
@@ -16,3 +16,17 @@ wallet = "~/.config/solana/id.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+
+[test]
+startup_wait = 5000
+shutdown_wait = 2000
+upgradeable = false
+
+[test.validator]
+bind_address = "0.0.0.0"
+url = "https://api.mainnet-beta.solana.com"
+ledger = ".anchor/test-ledger"
+rpc_port = 8899
+
+[[test.validator.clone]]
+address = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"

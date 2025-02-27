@@ -11,7 +11,7 @@ use {
     },
 };
 
-declare_id!("GwvQ53QTu1xz3XXYfG5m5jEqwhMBvVBudPS8TUuFYnhT");
+declare_id!("85nfCQoVyGT2KWeDfdkeVyiS9s3mRPyzSEEL93RpN1yV");
 
 #[program]
 pub mod solana_toy {
@@ -63,6 +63,27 @@ pub mod solana_toy {
 
         Ok(())
     }
+    pub fn mint_to_account(
+        ctx: Context<MintToAccount>,
+        amount: u64,
+    ) -> Result<()> {
+        anchor_spl::token::mint_to(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                anchor_spl::token::MintTo {
+                    mint: ctx.accounts.mint_account.to_account_info(),
+                    to: ctx.accounts.destination_account.to_account_info(),
+                    authority: ctx.accounts.mint_authority.to_account_info(),
+                },
+            ),
+            amount,
+        )?;
+        
+        msg!("Minted {} tokens to {}", amount, ctx.accounts.destination_account.key());
+        
+        Ok(())
+    }
+    
 }
 
 #[derive(Accounts)]
