@@ -7,7 +7,7 @@ pub mod solana_toy {
     use super::*;
 
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-        msg!("hello world2 {}", &id());
+        msg!("hello world {}", &id());
 
         Ok(())
     }
