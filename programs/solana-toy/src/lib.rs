@@ -64,7 +64,6 @@ pub enum VaultError {
     #[msg("Unauthorized access! Only the vault owner can distribute funds.")]
     Unauthorized,
 }
-
 #[derive(Accounts)]
 pub struct InitializeVault<'info> {
     #[account(
@@ -75,35 +74,36 @@ pub struct InitializeVault<'info> {
         bump
     )]
     pub vault_data: Account<'info, VaultData>,
+    /// CHECK: This is a PDA that will only hold SOL, and has no data.
     #[account(
-        seeds = [b"vault"], // ✅ Pure SOL-holding PDA
+        seeds = [b"vault"], // ✅ PDA for SOL storage
         bump
     )]
-    pub vault: SystemAccount<'info>,  // ✅ No `init` needed
+    pub vault: AccountInfo<'info>,  // ✅ Fixed: Added CHECK comment
     #[account(mut)]
     pub owner: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
-/// Context for depositing SOL into the vault
 #[derive(Accounts)]
 pub struct DepositSol<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    #[account(mut, seeds = [b"vault"], bump)] // ✅ Vault PDA for SOL storage
-    pub vault: SystemAccount<'info>, 
+    /// CHECK: This PDA is used for storing SOL and is validated by seeds.
+    #[account(mut, seeds = [b"vault"], bump)] 
+    pub vault: AccountInfo<'info>, 
     pub system_program: Program<'info, System>,
 }
 
-/// Context for distributing SOL from the vault
 #[derive(Accounts)]
 pub struct DistributeSol<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
+    /// CHECK: This PDA holds SOL and is validated by seeds.
     #[account(mut, seeds = [b"vault"], bump)]
-    pub vault: SystemAccount<'info>, // ✅ Pure SOL account
+    pub vault: AccountInfo<'info>, 
     #[account(mut, seeds = [b"vault_data"], bump)]
-    pub vault_data: Account<'info, VaultData>, // ✅ Holds owner metadata
+    pub vault_data: Account<'info, VaultData>, // ✅ Metadata account
     #[account(mut)]
     pub recipient: SystemAccount<'info>,
     pub system_program: Program<'info, System>,

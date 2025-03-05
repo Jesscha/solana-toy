@@ -52,7 +52,7 @@ describe("solana_toy", () => {
         vault: vaultPDA,
         vaultData: vaultDataPDA,
         systemProgram: anchor.web3.SystemProgram.programId,
-      })
+      } as any)
       .rpc();
   
     // ✅ Airdrop 0.5 SOL to the vault PDA to ensure it can distribute SOL later
@@ -72,7 +72,7 @@ describe("solana_toy", () => {
         user: user.publicKey,
         vault: vaultPDA,
         systemProgram: anchor.web3.SystemProgram.programId,
-      })
+      } as any)
       .signers([user]) // ✅ Ensure user signs the deposit
       .rpc();
 
@@ -96,7 +96,7 @@ describe("solana_toy", () => {
         vaultData: vaultDataPDA, // ✅ Added missing vaultDataPDA
         recipient: recipient.publicKey,
         systemProgram: anchor.web3.SystemProgram.programId,
-      })
+      } as any)
       .rpc();
 
     const finalRecipientBalance = await provider.connection.getBalance(recipient.publicKey);
