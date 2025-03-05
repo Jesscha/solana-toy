@@ -7,7 +7,7 @@ declare_id!("2FYV28WPRyd6qD6k62BsB2kf6AJ8UBUpnNTR5J2h37da");
 pub mod solana_toy {
     use super::*;
 
-    /// Initialize the vault (Create two PDAs: one for SOL storage, one for metadata)
+    /// Initialize the vault (Create metadata PDA)
     pub fn initialize_vault(ctx: Context<InitializeVault>) -> Result<()> {
         let vault_data = &mut ctx.accounts.vault_data;
         vault_data.owner = *ctx.accounts.owner.key;
@@ -23,7 +23,7 @@ pub mod solana_toy {
 
         transfer(
             CpiContext::new(ctx.accounts.system_program.to_account_info(), transfer_instruction),
-            amount
+            amount,
         )?;
 
         Ok(())
@@ -45,7 +45,7 @@ pub mod solana_toy {
                 transfer_instruction,
                 &[&[b"vault", &[ctx.bumps.vault]]], // ✅ PDA signs transaction
             ),
-            amount
+            amount,
         )?;
 
         Ok(())
@@ -76,14 +76,10 @@ pub struct InitializeVault<'info> {
     )]
     pub vault_data: Account<'info, VaultData>,
     #[account(
-        init,
-        payer = owner,
         seeds = [b"vault"], // ✅ Pure SOL-holding PDA
-        bump,
-        space = 0, // ✅ No data, only SOL
-        owner = system_program.key() // ✅ Owned by SystemProgram for transfers
+        bump
     )]
-    pub vault: SystemAccount<'info>, 
+    pub vault: SystemAccount<'info>,  // ✅ No `init` needed
     #[account(mut)]
     pub owner: Signer<'info>,
     pub system_program: Program<'info, System>,
