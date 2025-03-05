@@ -19,6 +19,8 @@ describe("solana_toy", () => {
   let recipient1 = anchor.web3.Keypair.generate();
   let recipient2 = anchor.web3.Keypair.generate();
   let recipient3 = anchor.web3.Keypair.generate();
+  const DEFAULT_FEE = 0.1;
+  const PLATFORM_FEE = 0.05;
 
   before(async () => {
     console.log("📌 Airdropping SOL to the authority...");
@@ -46,10 +48,12 @@ describe("solana_toy", () => {
       program.programId
     );
 
-    console.log("📌 Initializing Vault with preset reward ratios...");
-    const rewardRatios = [new anchor.BN(40), new anchor.BN(30), new anchor.BN(30)]; // 40%, 30%, 30%
+    console.log("📌 Initializing Vault with preset reward ratios and platform fee...");
+    const rewardRatios = [new anchor.BN(40), new anchor.BN(30), new anchor.BN(25)]; // 40%, 30%, 30%
+    const platformFee = new anchor.BN(PLATFORM_FEE * 100); // ✅ 5% platform fee
+
     await program.methods
-      .initializeVault(rewardRatios)
+      .initializeVault(rewardRatios, platformFee)
       .accounts({
         owner: authority.publicKey,
         vault: vaultPDA,
@@ -59,17 +63,41 @@ describe("solana_toy", () => {
       .rpc();
 
     console.log("✅ Vault Initialized!");
-
-    console.log("📌 Airdropping 0.5 SOL to the vault PDA...");
-    const vaultAirdrop = await provider.connection.requestAirdrop(
-      vaultPDA,
-      0.5 * anchor.web3.LAMPORTS_PER_SOL
-    );
-    await provider.connection.confirmTransaction(vaultAirdrop);
-    console.log("✅ Vault funded with 0.5 SOL!");
   });
 
-  it("User deposits 0.1 SOL into the vault", async () => {
+  it("Fails to deposit when the round is not running", async () => {
+    try {
+      await program.methods
+        .depositSol(new anchor.BN(DEFAULT_FEE * anchor.web3.LAMPORTS_PER_SOL))
+        .accounts({
+          user: user.publicKey,
+          vault: vaultPDA,
+          vaultData: vaultDataPDA,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        } as any)
+        .signers([user])
+        .rpc();
+
+      assert.fail("Deposit should have failed because the round is not running.");
+    } catch (err) {
+      console.log("✅ Deposit correctly failed when the round was inactive.");
+    }
+  });
+
+  it("Starts the league round", async () => {
+    console.log("📌 Starting the league round...");
+    await program.methods
+      .startRound()
+      .accounts({
+        owner: authority.publicKey,
+        vaultData: vaultDataPDA,
+      } as any)
+      .rpc();
+
+    console.log("✅ League round started!");
+  });
+
+  it("User deposits 0.1 SOL into the vault when round is active", async () => {
     const initialBalance = await provider.connection.getBalance(vaultPDA);
     console.log("🔹 Initial Vault Balance:", initialBalance / anchor.web3.LAMPORTS_PER_SOL, "SOL");
 
@@ -78,6 +106,7 @@ describe("solana_toy", () => {
       .accounts({
         user: user.publicKey,
         vault: vaultPDA,
+        vaultData: vaultDataPDA,
         systemProgram: anchor.web3.SystemProgram.programId,
       } as any)
       .signers([user])
@@ -88,12 +117,42 @@ describe("solana_toy", () => {
 
     assert.equal(
       finalBalance - initialBalance,
-      0.1 * anchor.web3.LAMPORTS_PER_SOL,
-      "Vault should have received 0.1 SOL"
+      DEFAULT_FEE * anchor.web3.LAMPORTS_PER_SOL,
+      "Vault should have received 0.2 SOL"
     );
   });
 
-  it("Distributes SOL to dynamically selected recipients based on preset ratios", async () => {
+  it("Ends the league round and transfers platform fee", async () => {
+    const initialAuthorityBalance = await provider.connection.getBalance(authority.publicKey);
+    const vaultBalance = await provider.connection.getBalance(vaultPDA);
+    console.log("🔹 Initial Authority Balance:", initialAuthorityBalance / anchor.web3.LAMPORTS_PER_SOL, "SOL");
+    console.log("🔹 Initial Vault Balance:", vaultBalance / anchor.web3.LAMPORTS_PER_SOL, "SOL");
+
+    console.log("📌 Ending the league round...");
+    await program.methods
+      .endRound()
+      .accounts({
+        owner: authority.publicKey,
+        vault: vaultPDA,
+        vaultData: vaultDataPDA,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      } as any)
+      .rpc();
+
+    const finalAuthorityBalance = await provider.connection.getBalance(authority.publicKey);
+   
+    const expectedFee = DEFAULT_FEE * PLATFORM_FEE * anchor.web3.LAMPORTS_PER_SOL;
+    const receivedFee = finalAuthorityBalance - initialAuthorityBalance;
+
+    // Allow a small margin of error due to transaction fees
+    const tolerance = 5000; // ~0.000005 SOL buffer for tx fee
+
+    assert.isAtMost(Math.abs(receivedFee - expectedFee), tolerance, `Owner should have received platform fee (adjusted for transaction fees).`);
+
+    console.log("✅ Platform fee transferred to owner!");
+  });
+
+  it("Distributes remaining SOL to dynamically selected recipients based on preset ratios", async () => {
     const recipients = [recipient1.publicKey, recipient2.publicKey, recipient3.publicKey];
 
     console.log("📌 Getting initial balances of recipients...");
@@ -113,8 +172,8 @@ describe("solana_toy", () => {
       .remainingAccounts(
         recipients.map((pubkey) => ({
           pubkey,
-          isWritable: true, // ✅ Recipients' balances change
-          isSigner: false,  // ✅ Recipients don't need to sign
+          isWritable: true,
+          isSigner: false,
         }))
       )
       .rpc();

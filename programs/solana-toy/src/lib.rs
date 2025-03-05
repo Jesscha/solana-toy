@@ -7,25 +7,73 @@ declare_id!("2FYV28WPRyd6qD6k62BsB2kf6AJ8UBUpnNTR5J2h37da");
 pub mod solana_toy {
     use super::*;
 
-    /// Initialize the vault (Set reward ratios, but not recipients)
+    /// Initialize the vault (Set reward ratios and platform fee)
     pub fn initialize_vault(
         ctx: Context<InitializeVault>,
         reward_ratios: Vec<u64>,   // ✅ Preset reward percentages (must sum to 100)
+        platform_fee: u64,         // ✅ Platform fee percentage (e.g., 5 = 5%)
     ) -> Result<()> {
         require!(
-            reward_ratios.iter().sum::<u64>() == 100,
+            reward_ratios.iter().sum::<u64>() + platform_fee == 100,
             VaultError::InvalidRatioSum
         );
 
         let vault_data = &mut ctx.accounts.vault_data;
         vault_data.owner = *ctx.accounts.owner.key;
         vault_data.reward_ratios = reward_ratios;
+        vault_data.platform_fee = platform_fee;
+        vault_data.is_running = false; // ✅ League starts as inactive
 
         Ok(())
     }
 
-    /// Deposit SOL into the vault
+    /// Start a new league round (Only owner)
+    pub fn start_round(ctx: Context<ManageRound>) -> Result<()> {
+        let vault_data = &mut ctx.accounts.vault_data;
+        require!(vault_data.owner == *ctx.accounts.owner.key, VaultError::Unauthorized);
+
+        vault_data.is_running = true;
+        msg!("League round started!");
+        Ok(())
+    }
+
+    /// End the current league round (Only owner, takes platform fee)
+    pub fn end_round(ctx: Context<EndRound>) -> Result<()> {
+        let vault_data = &mut ctx.accounts.vault_data;
+        require!(vault_data.owner == *ctx.accounts.owner.key, VaultError::Unauthorized);
+
+        vault_data.is_running = false; // ✅ League is now inactive
+
+        let vault_balance = ctx.accounts.vault.to_account_info().lamports();
+        require!(vault_balance > 0, VaultError::InsufficientFunds);
+
+        // Calculate platform fee
+        let platform_fee_amount = vault_balance * vault_data.platform_fee / 100;
+
+        // Transfer platform fee to owner
+        let transfer_instruction = Transfer {
+            from: ctx.accounts.vault.to_account_info(),
+            to: ctx.accounts.owner.to_account_info(),
+        };
+
+        transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.system_program.to_account_info(),
+                transfer_instruction,
+                &[&[b"vault", &[ctx.bumps.vault]]],
+            ),
+            platform_fee_amount,
+        )?;
+
+        msg!("Platform fee of {} lamports sent to owner.", platform_fee_amount);
+        Ok(())
+    }
+
+    /// Deposit SOL into the vault (Only allowed if the league is running)
     pub fn deposit_sol(ctx: Context<DepositSol>, amount: u64) -> Result<()> {
+        let vault_data = &ctx.accounts.vault_data;
+        require!(vault_data.is_running, VaultError::LeagueNotRunning);
+
         let transfer_instruction = Transfer {
             from: ctx.accounts.user.to_account_info(),
             to: ctx.accounts.vault.to_account_info(),
@@ -75,24 +123,28 @@ pub mod solana_toy {
     }
 }
 
-/// Vault metadata account (Stores reward ratios but not recipients)
+/// Vault metadata account (Stores reward ratios and league status)
 #[account]
 pub struct VaultData {
     pub owner: Pubkey,
-    pub reward_ratios: Vec<u64>,   // ✅ Reward distribution percentages (sum must be 100)
+    pub reward_ratios: Vec<u64>,   // ✅ Reward distribution percentages (must sum to 100)
+    pub platform_fee: u64,         // ✅ Platform fee percentage
+    pub is_running: bool,          // ✅ Indicates if the league is running
 }
 
 /// Error definitions
 #[error_code]
 pub enum VaultError {
-    #[msg("Unauthorized access! Only the vault owner can distribute funds.")]
+    #[msg("Unauthorized access! Only the vault owner can perform this action.")]
     Unauthorized,
-    #[msg("The sum of reward ratios must be 100.")]
+    #[msg("The sum of reward ratios and platform fee must be 100.")]
     InvalidRatioSum,
     #[msg("Vault does not have enough SOL to distribute.")]
     InsufficientFunds,
     #[msg("Number of recipients must match number of reward ratios.")]
     MismatchedRecipients,
+    #[msg("Deposits are only allowed when the league is running.")]
+    LeagueNotRunning,
 }
 
 #[derive(Accounts)]
@@ -100,7 +152,7 @@ pub struct InitializeVault<'info> {
     #[account(
         init,
         payer = owner,
-        space = 8 + 32 + (8 * 10), // ✅ Space for up to 10 reward ratios
+        space = 8 + 32 + (8 * 10) + 8 + 1, // ✅ Space for reward ratios + platform fee + league status
         seeds = [b"vault_data"],
         bump
     )]
@@ -117,12 +169,34 @@ pub struct InitializeVault<'info> {
 }
 
 #[derive(Accounts)]
+pub struct ManageRound<'info> {
+    #[account(mut, seeds = [b"vault_data"], bump)]
+    pub vault_data: Account<'info, VaultData>,
+    #[account(mut)]
+    pub owner: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct EndRound<'info> {
+    #[account(mut, seeds = [b"vault_data"], bump)]
+    pub vault_data: Account<'info, VaultData>,
+    /// CHECK: This is a PDA that will only hold SOL, and has no data.
+    #[account(mut, seeds = [b"vault"], bump)]
+    pub vault: AccountInfo<'info>,
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
 pub struct DepositSol<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    /// CHECK: This PDA is used for storing SOL and is validated by seeds.
+    /// CHECK: This is a PDA that will only hold SOL, and has no data.
     #[account(mut, seeds = [b"vault"], bump)] 
-    pub vault: AccountInfo<'info>, 
+    pub vault: AccountInfo<'info>,
+    #[account(seeds = [b"vault_data"], bump)]
+    pub vault_data: Account<'info, VaultData>,
     pub system_program: Program<'info, System>,
 }
 
@@ -130,11 +204,10 @@ pub struct DepositSol<'info> {
 pub struct DistributeSol<'info> {
     #[account(mut)]
     pub owner: Signer<'info>,
-    /// CHECK: This PDA holds SOL and is validated by seeds.
+    /// CHECK: This is a PDA that will only hold SOL, and has no data.
     #[account(mut, seeds = [b"vault"], bump)]
-    pub vault: AccountInfo<'info>, 
+    pub vault: AccountInfo<'info>,
     #[account(mut, seeds = [b"vault_data"], bump)]
     pub vault_data: Account<'info, VaultData>,
-    /// CHECK: Remaining accounts are dynamically passed recipients.
     pub system_program: Program<'info, System>,
 }
