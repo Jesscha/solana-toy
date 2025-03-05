@@ -21,21 +21,21 @@ describe("solana_toy", () => {
   let recipient3 = anchor.web3.Keypair.generate();
 
   before(async () => {
-    // Airdrop SOL to the authority (owner)
+    console.log("📌 Airdropping SOL to the authority...");
     const tx = await provider.connection.requestAirdrop(
       authority.publicKey,
       2 * anchor.web3.LAMPORTS_PER_SOL
     );
     await provider.connection.confirmTransaction(tx);
 
-    // Airdrop SOL to the user to ensure they can deposit SOL
+    console.log("📌 Airdropping SOL to the user...");
     const userAirdrop = await provider.connection.requestAirdrop(
       user.publicKey,
-      1 * anchor.web3.LAMPORTS_PER_SOL // ✅ Give user 1 SOL
+      1 * anchor.web3.LAMPORTS_PER_SOL
     );
     await provider.connection.confirmTransaction(userAirdrop);
 
-    // Derive the PDAs for vault and vault metadata
+    console.log("📌 Deriving PDAs...");
     [vaultPDA, vaultBump] = anchor.web3.PublicKey.findProgramAddressSync(
       [Buffer.from("vault")],
       program.programId
@@ -46,9 +46,10 @@ describe("solana_toy", () => {
       program.programId
     );
 
-    // Initialize the vault
+    console.log("📌 Initializing Vault with preset reward ratios...");
+    const rewardRatios = [new anchor.BN(40), new anchor.BN(30), new anchor.BN(30)]; // 40%, 30%, 30%
     await program.methods
-      .initializeVault()
+      .initializeVault(rewardRatios)
       .accounts({
         owner: authority.publicKey,
         vault: vaultPDA,
@@ -57,16 +58,20 @@ describe("solana_toy", () => {
       } as any)
       .rpc();
 
-    // ✅ Airdrop 0.5 SOL to the vault PDA to ensure it can distribute SOL later
+    console.log("✅ Vault Initialized!");
+
+    console.log("📌 Airdropping 0.5 SOL to the vault PDA...");
     const vaultAirdrop = await provider.connection.requestAirdrop(
       vaultPDA,
       0.5 * anchor.web3.LAMPORTS_PER_SOL
     );
     await provider.connection.confirmTransaction(vaultAirdrop);
+    console.log("✅ Vault funded with 0.5 SOL!");
   });
 
-  it("User deposits 0.1 SOL", async () => {
+  it("User deposits 0.1 SOL into the vault", async () => {
     const initialBalance = await provider.connection.getBalance(vaultPDA);
+    console.log("🔹 Initial Vault Balance:", initialBalance / anchor.web3.LAMPORTS_PER_SOL, "SOL");
 
     await program.methods
       .depositSol(new anchor.BN(0.1 * anchor.web3.LAMPORTS_PER_SOL))
@@ -75,11 +80,12 @@ describe("solana_toy", () => {
         vault: vaultPDA,
         systemProgram: anchor.web3.SystemProgram.programId,
       } as any)
-      .signers([user]) // ✅ Ensure user signs the deposit
+      .signers([user])
       .rpc();
 
     const finalBalance = await provider.connection.getBalance(vaultPDA);
-    console.log("finalBalance", finalBalance);
+    console.log("🔹 Final Vault Balance:", finalBalance / anchor.web3.LAMPORTS_PER_SOL, "SOL");
+
     assert.equal(
       finalBalance - initialBalance,
       0.1 * anchor.web3.LAMPORTS_PER_SOL,
@@ -87,20 +93,17 @@ describe("solana_toy", () => {
     );
   });
 
-  it("Authorized account distributes SOL to multiple recipients", async () => {
+  it("Distributes SOL to dynamically selected recipients based on preset ratios", async () => {
     const recipients = [recipient1.publicKey, recipient2.publicKey, recipient3.publicKey];
-    const amounts = [
-      new anchor.BN(0.05 * anchor.web3.LAMPORTS_PER_SOL), // 0.05 SOL
-      new anchor.BN(0.1 * anchor.web3.LAMPORTS_PER_SOL),  // 0.1 SOL
-      new anchor.BN(0.15 * anchor.web3.LAMPORTS_PER_SOL), // 0.15 SOL
-    ];
 
+    console.log("📌 Getting initial balances of recipients...");
     const initialBalances = await Promise.all(
       recipients.map((recipient) => provider.connection.getBalance(recipient))
     );
 
+    console.log("📌 Distributing SOL...");
     await program.methods
-      .distributeSol(recipients, amounts)
+      .distributeSol()
       .accounts({
         owner: authority.publicKey,
         vault: vaultPDA,
@@ -116,13 +119,24 @@ describe("solana_toy", () => {
       )
       .rpc();
 
+    console.log("📌 Getting final balances of recipients...");
     const finalBalances = await Promise.all(
       recipients.map((recipient) => provider.connection.getBalance(recipient))
     );
 
+    console.log("🔹 Final Balances:");
     recipients.forEach((recipient, i) => {
-      console.log(`Recipient ${i + 1} Final Balance:`, finalBalances[i]);
+      console.log(`Recipient ${i + 1}: ${finalBalances[i] / anchor.web3.LAMPORTS_PER_SOL} SOL`);
+    });
+
+    // ✅ Ensure recipients received the expected amount
+    const vaultBalanceAfterDistribution = await provider.connection.getBalance(vaultPDA);
+    console.log("🔹 Vault Balance After Distribution:", vaultBalanceAfterDistribution / anchor.web3.LAMPORTS_PER_SOL, "SOL");
+
+    recipients.forEach((recipient, i) => {
       assert.isAbove(finalBalances[i], initialBalances[i], `Recipient ${i + 1} should have received SOL`);
     });
+
+    console.log("✅ Distribution test passed!");
   });
 });

@@ -7,10 +7,20 @@ declare_id!("2FYV28WPRyd6qD6k62BsB2kf6AJ8UBUpnNTR5J2h37da");
 pub mod solana_toy {
     use super::*;
 
-    /// Initialize the vault (Create metadata PDA)
-    pub fn initialize_vault(ctx: Context<InitializeVault>) -> Result<()> {
+    /// Initialize the vault (Set reward ratios, but not recipients)
+    pub fn initialize_vault(
+        ctx: Context<InitializeVault>,
+        reward_ratios: Vec<u64>,   // ✅ Preset reward percentages (must sum to 100)
+    ) -> Result<()> {
+        require!(
+            reward_ratios.iter().sum::<u64>() == 100,
+            VaultError::InvalidRatioSum
+        );
+
         let vault_data = &mut ctx.accounts.vault_data;
         vault_data.owner = *ctx.accounts.owner.key;
+        vault_data.reward_ratios = reward_ratios;
+
         Ok(())
     }
 
@@ -29,43 +39,35 @@ pub mod solana_toy {
         Ok(())
     }
 
-    /// Distribute SOL to multiple recipients
-    pub fn distribute_sol<'info>(
-        ctx: Context<'_, '_, '_, 'info, DistributeSol<'info>>,
-        recipients: Vec<Pubkey>,  // ✅ List of recipient public keys
-        amounts: Vec<u64>,        // ✅ List of amounts (must match recipients)
-    ) -> Result<()> {
+    /// Distribute SOL dynamically to selected recipients based on preset ratios
+    pub fn distribute_sol<'info>(ctx: Context<'_, '_, '_, 'info, DistributeSol<'info>>) -> Result<()> {
         let vault_data = &ctx.accounts.vault_data;
         require!(vault_data.owner == *ctx.accounts.owner.key, VaultError::Unauthorized);
 
-        // Ensure the arrays are of the same length
-        require!(
-            recipients.len() == amounts.len(),
-            VaultError::InvalidRecipientList
-        );
-
-        let total_distribution: u64 = amounts.iter().sum();
-
-        // Ensure vault has enough SOL to distribute
         let vault_balance = ctx.accounts.vault.to_account_info().lamports();
+        require!(vault_balance > 0, VaultError::InsufficientFunds);
+
+        let recipient_count = ctx.remaining_accounts.len();
         require!(
-            vault_balance >= total_distribution,
-            VaultError::InsufficientFunds
+            recipient_count == vault_data.reward_ratios.len(),
+            VaultError::MismatchedRecipients
         );
 
-        for (i, recipient) in recipients.iter().enumerate() {
+        for (i, recipient_account) in ctx.remaining_accounts.iter().enumerate() {
+            let reward_amount = vault_balance * vault_data.reward_ratios[i] / 100;
+
             let transfer_instruction = Transfer {
                 from: ctx.accounts.vault.to_account_info(),
-                to: ctx.remaining_accounts[i].to_account_info(), // ✅ Use `remaining_accounts` for dynamic recipients
+                to: recipient_account.to_account_info(),
             };
 
             transfer(
                 CpiContext::new_with_signer(
                     ctx.accounts.system_program.to_account_info(),
                     transfer_instruction,
-                    &[&[b"vault", &[ctx.bumps.vault]]], // ✅ PDA signs transaction
+                    &[&[b"vault", &[ctx.bumps.vault]]],
                 ),
-                amounts[i],
+                reward_amount,
             )?;
         }
 
@@ -73,10 +75,11 @@ pub mod solana_toy {
     }
 }
 
-/// Vault metadata account (Only stores owner)
+/// Vault metadata account (Stores reward ratios but not recipients)
 #[account]
 pub struct VaultData {
-    pub owner: Pubkey, // The authorized account to distribute SOL
+    pub owner: Pubkey,
+    pub reward_ratios: Vec<u64>,   // ✅ Reward distribution percentages (sum must be 100)
 }
 
 /// Error definitions
@@ -84,10 +87,12 @@ pub struct VaultData {
 pub enum VaultError {
     #[msg("Unauthorized access! Only the vault owner can distribute funds.")]
     Unauthorized,
-    #[msg("Recipient and amount lists must be of the same length.")]
-    InvalidRecipientList,
+    #[msg("The sum of reward ratios must be 100.")]
+    InvalidRatioSum,
     #[msg("Vault does not have enough SOL to distribute.")]
     InsufficientFunds,
+    #[msg("Number of recipients must match number of reward ratios.")]
+    MismatchedRecipients,
 }
 
 #[derive(Accounts)]
@@ -95,8 +100,8 @@ pub struct InitializeVault<'info> {
     #[account(
         init,
         payer = owner,
-        space = 8 + 32,
-        seeds = [b"vault_data"], // ✅ Metadata PDA
+        space = 8 + 32 + (8 * 10), // ✅ Space for up to 10 reward ratios
+        seeds = [b"vault_data"],
         bump
     )]
     pub vault_data: Account<'info, VaultData>,
@@ -105,7 +110,7 @@ pub struct InitializeVault<'info> {
         seeds = [b"vault"], // ✅ PDA for SOL storage
         bump
     )]
-    pub vault: AccountInfo<'info>,  // ✅ Fixed: Added CHECK comment
+    pub vault: AccountInfo<'info>,
     #[account(mut)]
     pub owner: Signer<'info>,
     pub system_program: Program<'info, System>,
@@ -129,7 +134,7 @@ pub struct DistributeSol<'info> {
     #[account(mut, seeds = [b"vault"], bump)]
     pub vault: AccountInfo<'info>, 
     #[account(mut, seeds = [b"vault_data"], bump)]
-    pub vault_data: Account<'info, VaultData>, // ✅ Metadata account
-    /// CHECK: Remaining accounts will be dynamically provided for recipients.
+    pub vault_data: Account<'info, VaultData>,
+    /// CHECK: Remaining accounts are dynamically passed recipients.
     pub system_program: Program<'info, System>,
 }
