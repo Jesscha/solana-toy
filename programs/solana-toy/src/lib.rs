@@ -1,7 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::system_program;
-use anchor_lang::solana_program::system_instruction;
-use anchor_lang::solana_program::program::invoke;
+use anchor_lang::system_program::{transfer, Transfer};
 
 declare_id!("2FYV28WPRyd6qD6k62BsB2kf6AJ8UBUpnNTR5J2h37da");
 
@@ -9,135 +7,108 @@ declare_id!("2FYV28WPRyd6qD6k62BsB2kf6AJ8UBUpnNTR5J2h37da");
 pub mod solana_toy {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-        let arena = &mut ctx.accounts.arena;
-        arena.admin = ctx.accounts.admin.key();
-        arena.vault = ctx.accounts.vault.key();
-        arena.total_pool = 0;
-        arena.active = false;
-        msg!("Arena initialized with admin: {}", arena.admin);
+    /// Initialize the vault (Create two PDAs: one for SOL storage, one for metadata)
+    pub fn initialize_vault(ctx: Context<InitializeVault>) -> Result<()> {
+        let vault_data = &mut ctx.accounts.vault_data;
+        vault_data.owner = *ctx.accounts.owner.key;
         Ok(())
     }
 
-    pub fn start_round(ctx: Context<StartRound>) -> Result<()> {
-        let arena = &mut ctx.accounts.arena;
-        require!(!arena.active, CustomError::RoundAlreadyActive);
-        require!(ctx.accounts.admin.key() == arena.admin, CustomError::Unauthorized);
-        
-        arena.active = true;
-        msg!("Round started");
-        Ok(())
-    }
+    /// Deposit SOL into the vault
+    pub fn deposit_sol(ctx: Context<DepositSol>, amount: u64) -> Result<()> {
+        let transfer_instruction = Transfer {
+            from: ctx.accounts.user.to_account_info(),
+            to: ctx.accounts.vault.to_account_info(),
+        };
 
-    pub fn participate(ctx: Context<Participate>) -> Result<()> {
-        let arena = &mut ctx.accounts.arena;
-        let user = &ctx.accounts.user;
-        let vault = &mut ctx.accounts.vault;
-        
-        let fee = 100_000_000; // 0.1 SOL
-
-        invoke(
-            &system_instruction::transfer(user.key, vault.key, fee),
-            &[user.to_account_info(), vault.to_account_info()],
+        transfer(
+            CpiContext::new(ctx.accounts.system_program.to_account_info(), transfer_instruction),
+            amount
         )?;
-        
-        arena.total_pool += fee;
-        msg!("User {} participated with 0.1 SOL", user.key());
+
         Ok(())
     }
-    pub fn end_round<'info>(
-        ctx: Context<'_, '_, '_, 'info, EndRound<'info>>,
-        rewards: Vec<u64>,
-    ) -> Result<()> {
-        let arena = &mut ctx.accounts.arena;
-        let vault_ai = ctx.accounts.vault.to_account_info();
-        let admin_ai = ctx.accounts.admin.to_account_info();
-    
-        require!(arena.active, CustomError::RoundNotActive);
-        require!(ctx.remaining_accounts.len() == rewards.len(), CustomError::InvalidInput);
-        require!(admin_ai.key() == arena.admin, CustomError::Unauthorized);
-    
-        for i in 0..ctx.remaining_accounts.len() {
-            let winner_ai = ctx.remaining_accounts[i].clone();
-            let reward = rewards[i];
-            
-            let ix = system_instruction::transfer(
-                &vault_ai.key(),
-                &winner_ai.key(),
-                reward,
-            );
-            invoke(
-                &ix,
-                &[
-                    vault_ai.clone(),
-                    admin_ai.clone(),
-                    winner_ai,
-                ],
-            )?;
-        }
-        arena.total_pool = 0;
-        arena.active = false;
+
+    /// Distribute SOL to a user (Only the owner can request this)
+    pub fn distribute_sol(ctx: Context<DistributeSol>, amount: u64) -> Result<()> {
+        let vault_data = &ctx.accounts.vault_data;
+        require!(vault_data.owner == *ctx.accounts.owner.key, VaultError::Unauthorized);
+
+        let transfer_instruction = Transfer {
+            from: ctx.accounts.vault.to_account_info(),
+            to: ctx.accounts.recipient.to_account_info(),
+        };
+
+        transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.system_program.to_account_info(),
+                transfer_instruction,
+                &[&[b"vault", &[ctx.bumps.vault]]], // ✅ PDA signs transaction
+            ),
+            amount
+        )?;
+
         Ok(())
     }
-     
-    
-    
 }
 
+/// Vault metadata account (Only stores owner)
 #[account]
-pub struct Arena {
-    pub admin: Pubkey,
-    pub vault: Pubkey,
-    pub total_pool: u64,
-    pub active: bool,
+pub struct VaultData {
+    pub owner: Pubkey, // The authorized account to distribute SOL
+}
+
+/// Error definitions
+#[error_code]
+pub enum VaultError {
+    #[msg("Unauthorized access! Only the vault owner can distribute funds.")]
+    Unauthorized,
 }
 
 #[derive(Accounts)]
-pub struct Initialize<'info> {
+pub struct InitializeVault<'info> {
+    #[account(
+        init,
+        payer = owner,
+        space = 8 + 32,
+        seeds = [b"vault_data"], // ✅ Metadata PDA
+        bump
+    )]
+    pub vault_data: Account<'info, VaultData>,
+    #[account(
+        init,
+        payer = owner,
+        seeds = [b"vault"], // ✅ Pure SOL-holding PDA
+        bump,
+        space = 0, // ✅ No data, only SOL
+        owner = system_program.key() // ✅ Owned by SystemProgram for transfers
+    )]
+    pub vault: SystemAccount<'info>, 
     #[account(mut)]
-    pub admin: Signer<'info>,
-    #[account(init, payer = admin, space = 8 + 32 + 32 + 8 + 1)]
-    pub arena: Account<'info, Arena>,
-    #[account(mut)]
-    pub vault: SystemAccount<'info>,
+    pub owner: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
 
+/// Context for depositing SOL into the vault
 #[derive(Accounts)]
-pub struct StartRound<'info> {
-    #[account(mut)]
-    pub admin: Signer<'info>,
-    #[account(mut)]
-    pub arena: Account<'info, Arena>,
-}
-
-#[derive(Accounts)]
-pub struct Participate<'info> {
+pub struct DepositSol<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    #[account(mut)]
-    pub vault: SystemAccount<'info>,
-    #[account(mut)]
-    pub arena: Account<'info, Arena>,
+    #[account(mut, seeds = [b"vault"], bump)] // ✅ Vault PDA for SOL storage
+    pub vault: SystemAccount<'info>, 
     pub system_program: Program<'info, System>,
 }
 
+/// Context for distributing SOL from the vault
 #[derive(Accounts)]
-pub struct EndRound<'info> {
+pub struct DistributeSol<'info> {
     #[account(mut)]
-    pub admin: Signer<'info>,
+    pub owner: Signer<'info>,
+    #[account(mut, seeds = [b"vault"], bump)]
+    pub vault: SystemAccount<'info>, // ✅ Pure SOL account
+    #[account(mut, seeds = [b"vault_data"], bump)]
+    pub vault_data: Account<'info, VaultData>, // ✅ Holds owner metadata
     #[account(mut)]
-    pub vault: SystemAccount<'info>,
-    #[account(mut)]
-    pub arena: Account<'info, Arena>,
+    pub recipient: SystemAccount<'info>,
     pub system_program: Program<'info, System>,
-}
-
-
-#[error_code]
-pub enum CustomError {
-    #[msg("Invalid input parameters")] InvalidInput,
-    #[msg("Unauthorized access")] Unauthorized,
-    #[msg("Round is already active")] RoundAlreadyActive,
-    #[msg("Round is not active")] RoundNotActive,
 }
