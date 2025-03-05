@@ -29,24 +29,45 @@ pub mod solana_toy {
         Ok(())
     }
 
-    /// Distribute SOL to a user (Only the owner can request this)
-    pub fn distribute_sol(ctx: Context<DistributeSol>, amount: u64) -> Result<()> {
+    /// Distribute SOL to multiple recipients
+    pub fn distribute_sol<'info>(
+        ctx: Context<'_, '_, '_, 'info, DistributeSol<'info>>,
+        recipients: Vec<Pubkey>,  // ✅ List of recipient public keys
+        amounts: Vec<u64>,        // ✅ List of amounts (must match recipients)
+    ) -> Result<()> {
         let vault_data = &ctx.accounts.vault_data;
         require!(vault_data.owner == *ctx.accounts.owner.key, VaultError::Unauthorized);
 
-        let transfer_instruction = Transfer {
-            from: ctx.accounts.vault.to_account_info(),
-            to: ctx.accounts.recipient.to_account_info(),
-        };
+        // Ensure the arrays are of the same length
+        require!(
+            recipients.len() == amounts.len(),
+            VaultError::InvalidRecipientList
+        );
 
-        transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.system_program.to_account_info(),
-                transfer_instruction,
-                &[&[b"vault", &[ctx.bumps.vault]]], // ✅ PDA signs transaction
-            ),
-            amount,
-        )?;
+        let total_distribution: u64 = amounts.iter().sum();
+
+        // Ensure vault has enough SOL to distribute
+        let vault_balance = ctx.accounts.vault.to_account_info().lamports();
+        require!(
+            vault_balance >= total_distribution,
+            VaultError::InsufficientFunds
+        );
+
+        for (i, recipient) in recipients.iter().enumerate() {
+            let transfer_instruction = Transfer {
+                from: ctx.accounts.vault.to_account_info(),
+                to: ctx.remaining_accounts[i].to_account_info(), // ✅ Use `remaining_accounts` for dynamic recipients
+            };
+
+            transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.system_program.to_account_info(),
+                    transfer_instruction,
+                    &[&[b"vault", &[ctx.bumps.vault]]], // ✅ PDA signs transaction
+                ),
+                amounts[i],
+            )?;
+        }
 
         Ok(())
     }
@@ -63,7 +84,12 @@ pub struct VaultData {
 pub enum VaultError {
     #[msg("Unauthorized access! Only the vault owner can distribute funds.")]
     Unauthorized,
+    #[msg("Recipient and amount lists must be of the same length.")]
+    InvalidRecipientList,
+    #[msg("Vault does not have enough SOL to distribute.")]
+    InsufficientFunds,
 }
+
 #[derive(Accounts)]
 pub struct InitializeVault<'info> {
     #[account(
@@ -104,7 +130,6 @@ pub struct DistributeSol<'info> {
     pub vault: AccountInfo<'info>, 
     #[account(mut, seeds = [b"vault_data"], bump)]
     pub vault_data: Account<'info, VaultData>, // ✅ Metadata account
-    #[account(mut)]
-    pub recipient: SystemAccount<'info>,
+    /// CHECK: Remaining accounts will be dynamically provided for recipients.
     pub system_program: Program<'info, System>,
 }

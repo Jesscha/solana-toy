@@ -16,7 +16,9 @@ describe("solana_toy", () => {
 
   let authority = provider.wallet;
   let user = anchor.web3.Keypair.generate();
-  let recipient = anchor.web3.Keypair.generate();
+  let recipient1 = anchor.web3.Keypair.generate();
+  let recipient2 = anchor.web3.Keypair.generate();
+  let recipient3 = anchor.web3.Keypair.generate();
 
   before(async () => {
     // Airdrop SOL to the authority (owner)
@@ -25,14 +27,14 @@ describe("solana_toy", () => {
       2 * anchor.web3.LAMPORTS_PER_SOL
     );
     await provider.connection.confirmTransaction(tx);
-  
+
     // Airdrop SOL to the user to ensure they can deposit SOL
     const userAirdrop = await provider.connection.requestAirdrop(
       user.publicKey,
       1 * anchor.web3.LAMPORTS_PER_SOL // ✅ Give user 1 SOL
     );
     await provider.connection.confirmTransaction(userAirdrop);
-  
+
     // Derive the PDAs for vault and vault metadata
     [vaultPDA, vaultBump] = anchor.web3.PublicKey.findProgramAddressSync(
       [Buffer.from("vault")],
@@ -54,7 +56,7 @@ describe("solana_toy", () => {
         systemProgram: anchor.web3.SystemProgram.programId,
       } as any)
       .rpc();
-  
+
     // ✅ Airdrop 0.5 SOL to the vault PDA to ensure it can distribute SOL later
     const vaultAirdrop = await provider.connection.requestAirdrop(
       vaultPDA,
@@ -85,22 +87,42 @@ describe("solana_toy", () => {
     );
   });
 
-  it("Authorized account distributes SOL", async () => {
-    const initialRecipientBalance = await provider.connection.getBalance(recipient.publicKey);
+  it("Authorized account distributes SOL to multiple recipients", async () => {
+    const recipients = [recipient1.publicKey, recipient2.publicKey, recipient3.publicKey];
+    const amounts = [
+      new anchor.BN(0.05 * anchor.web3.LAMPORTS_PER_SOL), // 0.05 SOL
+      new anchor.BN(0.1 * anchor.web3.LAMPORTS_PER_SOL),  // 0.1 SOL
+      new anchor.BN(0.15 * anchor.web3.LAMPORTS_PER_SOL), // 0.15 SOL
+    ];
+
+    const initialBalances = await Promise.all(
+      recipients.map((recipient) => provider.connection.getBalance(recipient))
+    );
 
     await program.methods
-      .distributeSol(new anchor.BN(50_000_000))
+      .distributeSol(recipients, amounts)
       .accounts({
         owner: authority.publicKey,
         vault: vaultPDA,
-        vaultData: vaultDataPDA, // ✅ Added missing vaultDataPDA
-        recipient: recipient.publicKey,
+        vaultData: vaultDataPDA,
         systemProgram: anchor.web3.SystemProgram.programId,
       } as any)
+      .remainingAccounts(
+        recipients.map((pubkey) => ({
+          pubkey,
+          isWritable: true, // ✅ Recipients' balances change
+          isSigner: false,  // ✅ Recipients don't need to sign
+        }))
+      )
       .rpc();
 
-    const finalRecipientBalance = await provider.connection.getBalance(recipient.publicKey);
-    console.log("finalRecipientBalance", finalRecipientBalance);
-    assert.isAbove(finalRecipientBalance, initialRecipientBalance, "Recipient should have received SOL");
+    const finalBalances = await Promise.all(
+      recipients.map((recipient) => provider.connection.getBalance(recipient))
+    );
+
+    recipients.forEach((recipient, i) => {
+      console.log(`Recipient ${i + 1} Final Balance:`, finalBalances[i]);
+      assert.isAbove(finalBalances[i], initialBalances[i], `Recipient ${i + 1} should have received SOL`);
+    });
   });
 });
