@@ -45,29 +45,43 @@ pub mod solana_toy {
         msg!("User {} participated with 0.1 SOL", user.key());
         Ok(())
     }
-
-    pub fn end_round(ctx: Context<EndRound>, winners: Vec<Pubkey>, rewards: Vec<u64>) -> Result<()> {
+    pub fn end_round<'info>(
+        ctx: Context<'_, '_, '_, 'info, EndRound<'info>>,
+        rewards: Vec<u64>,
+    ) -> Result<()> {
         let arena = &mut ctx.accounts.arena;
-        let vault = &mut ctx.accounts.vault;
-        let admin = &ctx.accounts.admin;
-
+        let vault_ai = ctx.accounts.vault.to_account_info();
+        let admin_ai = ctx.accounts.admin.to_account_info();
+    
         require!(arena.active, CustomError::RoundNotActive);
-        require!(winners.len() == rewards.len(), CustomError::InvalidInput);
-        require!(admin.key() == arena.admin, CustomError::Unauthorized);
-
-        for (winner, amount) in winners.iter().zip(rewards.iter()) {
+        require!(ctx.remaining_accounts.len() == rewards.len(), CustomError::InvalidInput);
+        require!(admin_ai.key() == arena.admin, CustomError::Unauthorized);
+    
+        for i in 0..ctx.remaining_accounts.len() {
+            let winner_ai = ctx.remaining_accounts[i].clone();
+            let reward = rewards[i];
+            
+            let ix = system_instruction::transfer(
+                &vault_ai.key(),
+                &winner_ai.key(),
+                reward,
+            );
             invoke(
-                &system_instruction::transfer(vault.key, winner, *amount),
-                &[vault.to_account_info(), admin.to_account_info()],
+                &ix,
+                &[
+                    vault_ai.clone(),
+                    admin_ai.clone(),
+                    winner_ai,
+                ],
             )?;
-            msg!("Winner {} received {} SOL", winner, *amount as f64 / 1_000_000_000.0);
         }
-
         arena.total_pool = 0;
         arena.active = false;
-        msg!("Round ended successfully");
         Ok(())
     }
+     
+    
+    
 }
 
 #[account]
@@ -118,6 +132,7 @@ pub struct EndRound<'info> {
     pub arena: Account<'info, Arena>,
     pub system_program: Program<'info, System>,
 }
+
 
 #[error_code]
 pub enum CustomError {

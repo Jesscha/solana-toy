@@ -108,22 +108,40 @@ describe("solana-toy", () => {
     const amounts = [new anchor.BN(0.05 * LAMPORTS_PER_SOL)];
     const beforeBalance = await provider.connection.getBalance(user.publicKey);
 
+    console.log('all accounts', {
+      admin: admin.publicKey,
+      vault: vault.publicKey,
+      arena: arena.publicKey,
+      systemProgram: SystemProgram.programId,
+    });
+
     await program.methods
-      .endRound(winners, amounts)
+      .endRound(amounts)  // ✅ Pass only `amounts` (NOT `winners`, winners are passed separately)
       .accounts({
         admin: admin.publicKey,
         vault: vault.publicKey,
         arena: arena.publicKey,
         systemProgram: SystemProgram.programId,
       } as any)
+      .remainingAccounts(
+        winners.map((winner) => ({
+          pubkey: winner,
+          isWritable: true,  // ✅ Must be writable to receive SOL
+          isSigner: false,   // ✅ Winners do NOT sign this transaction
+        }))
+      )
       .signers([admin])
       .rpc();
 
     const afterBalance = await provider.connection.getBalance(user.publicKey);
     const arenaAccount = await program.account.arena.fetch(arena.publicKey);
 
+    console.log("Balance before:", beforeBalance);
+    console.log("Balance after:", afterBalance);
+
     assert.equal(afterBalance - beforeBalance, amounts[0].toNumber());
     assert.equal(arenaAccount.totalPool.toNumber(), 0);
     assert.equal(arenaAccount.active, false);
-  });
+});
+ 
 });
