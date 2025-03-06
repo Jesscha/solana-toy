@@ -4,28 +4,27 @@ import { SolanaToy } from "../target/types/solana_toy";
 import { assert } from "chai";
 
 describe("solana_toy", () => {
-  // Configure the client
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
   const program = anchor.workspace.SolanaToy as Program<SolanaToy>;
 
+  let adminConfigPDA: anchor.web3.PublicKey;
   let vaultPDA: anchor.web3.PublicKey;
   let vaultDataPDA: anchor.web3.PublicKey;
-  let vaultBump: number;
-  let vaultDataBump: number;
 
-  let authority = provider.wallet;
+  let admin = provider.wallet;
   let user = anchor.web3.Keypair.generate();
   let recipient1 = anchor.web3.Keypair.generate();
   let recipient2 = anchor.web3.Keypair.generate();
   let recipient3 = anchor.web3.Keypair.generate();
+
   const DEFAULT_FEE = 0.1;
   const PLATFORM_FEE = 0.05;
 
   before(async () => {
-    console.log("📌 Airdropping SOL to the authority...");
+    console.log("📌 Airdropping SOL to the admin...");
     const tx = await provider.connection.requestAirdrop(
-      authority.publicKey,
+      admin.publicKey,
       2 * anchor.web3.LAMPORTS_PER_SOL
     );
     await provider.connection.confirmTransaction(tx);
@@ -38,24 +37,42 @@ describe("solana_toy", () => {
     await provider.connection.confirmTransaction(userAirdrop);
 
     console.log("📌 Deriving PDAs...");
-    [vaultPDA, vaultBump] = anchor.web3.PublicKey.findProgramAddressSync(
+    [adminConfigPDA] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("admin_config")],
+      program.programId
+    );
+
+    [vaultPDA] = anchor.web3.PublicKey.findProgramAddressSync(
       [Buffer.from("vault")],
       program.programId
     );
 
-    [vaultDataPDA, vaultDataBump] = anchor.web3.PublicKey.findProgramAddressSync(
+    [vaultDataPDA] = anchor.web3.PublicKey.findProgramAddressSync(
       [Buffer.from("vault_data")],
       program.programId
     );
 
-    console.log("📌 Initializing Vault with preset reward ratios and platform fee...");
-    const rewardRatios = [new anchor.BN(40), new anchor.BN(30), new anchor.BN(25)]; // 40%, 30%, 30%
-    const platformFee = new anchor.BN(PLATFORM_FEE * 100); // ✅ 5% platform fee
+    console.log("📌 Initializing Admin...");
+    await program.methods
+      .initializeAdmin()
+      .accounts({
+        admin: admin.publicKey,
+        adminConfig: adminConfigPDA,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      } as any)
+      .rpc();
+
+    console.log("✅ Admin Initialized!");
+
+    console.log("📌 Initializing Vault...");
+    const rewardRatios = [new anchor.BN(40), new anchor.BN(30), new anchor.BN(25)];
+    const platformFee = new anchor.BN(PLATFORM_FEE * 100);
 
     await program.methods
       .initializeVault(rewardRatios, platformFee)
       .accounts({
-        owner: authority.publicKey,
+        admin: admin.publicKey,
+        adminConfig: adminConfigPDA,
         vault: vaultPDA,
         vaultData: vaultDataPDA,
         systemProgram: anchor.web3.SystemProgram.programId,
@@ -89,7 +106,7 @@ describe("solana_toy", () => {
     await program.methods
       .startRound()
       .accounts({
-        owner: authority.publicKey,
+        admin: admin.publicKey,
         vaultData: vaultDataPDA,
       } as any)
       .rpc();
@@ -118,38 +135,42 @@ describe("solana_toy", () => {
     assert.equal(
       finalBalance - initialBalance,
       DEFAULT_FEE * anchor.web3.LAMPORTS_PER_SOL,
-      "Vault should have received 0.2 SOL"
+      "Vault should have received 0.1 SOL"
     );
   });
 
   it("Ends the league round and transfers platform fee", async () => {
-    const initialAuthorityBalance = await provider.connection.getBalance(authority.publicKey);
+    const initialAdminBalance = await provider.connection.getBalance(admin.publicKey);
     const vaultBalance = await provider.connection.getBalance(vaultPDA);
-    console.log("🔹 Initial Authority Balance:", initialAuthorityBalance / anchor.web3.LAMPORTS_PER_SOL, "SOL");
+
+    console.log("🔹 Initial Admin Balance:", initialAdminBalance / anchor.web3.LAMPORTS_PER_SOL, "SOL");
     console.log("🔹 Initial Vault Balance:", vaultBalance / anchor.web3.LAMPORTS_PER_SOL, "SOL");
 
     console.log("📌 Ending the league round...");
     await program.methods
       .endRound()
       .accounts({
-        owner: authority.publicKey,
+        admin: admin.publicKey,
         vault: vaultPDA,
         vaultData: vaultDataPDA,
         systemProgram: anchor.web3.SystemProgram.programId,
       } as any)
       .rpc();
 
-    const finalAuthorityBalance = await provider.connection.getBalance(authority.publicKey);
-   
+    const finalAdminBalance = await provider.connection.getBalance(admin.publicKey);
+
     const expectedFee = DEFAULT_FEE * PLATFORM_FEE * anchor.web3.LAMPORTS_PER_SOL;
-    const receivedFee = finalAuthorityBalance - initialAuthorityBalance;
+    const receivedFee = finalAdminBalance - initialAdminBalance;
 
-    // Allow a small margin of error due to transaction fees
-    const tolerance = 5000; // ~0.000005 SOL buffer for tx fee
+    const tolerance = 5000; // Small buffer for transaction fees
 
-    assert.isAtMost(Math.abs(receivedFee - expectedFee), tolerance, `Owner should have received platform fee (adjusted for transaction fees).`);
+    assert.isAtMost(
+      Math.abs(receivedFee - expectedFee),
+      tolerance,
+      "Admin should have received platform fee (adjusted for transaction fees)."
+    );
 
-    console.log("✅ Platform fee transferred to owner!");
+    console.log("✅ Platform fee transferred to admin!");
   });
 
   it("Distributes remaining SOL to dynamically selected recipients based on preset ratios", async () => {
@@ -164,7 +185,7 @@ describe("solana_toy", () => {
     await program.methods
       .distributeSol()
       .accounts({
-        owner: authority.publicKey,
+        admin: admin.publicKey,
         vault: vaultPDA,
         vaultData: vaultDataPDA,
         systemProgram: anchor.web3.SystemProgram.programId,
@@ -188,13 +209,12 @@ describe("solana_toy", () => {
       console.log(`Recipient ${i + 1}: ${finalBalances[i] / anchor.web3.LAMPORTS_PER_SOL} SOL`);
     });
 
-    // ✅ Ensure recipients received the expected amount
-    const vaultBalanceAfterDistribution = await provider.connection.getBalance(vaultPDA);
-    console.log("🔹 Vault Balance After Distribution:", vaultBalanceAfterDistribution / anchor.web3.LAMPORTS_PER_SOL, "SOL");
-
     recipients.forEach((recipient, i) => {
       assert.isAbove(finalBalances[i], initialBalances[i], `Recipient ${i + 1} should have received SOL`);
     });
+
+    const vaultBalanceAfterDistribution = await provider.connection.getBalance(vaultPDA);
+    console.log("🔹 Vault Balance After Distribution:", vaultBalanceAfterDistribution / anchor.web3.LAMPORTS_PER_SOL, "SOL");
 
     console.log("✅ Distribution test passed!");
   });
